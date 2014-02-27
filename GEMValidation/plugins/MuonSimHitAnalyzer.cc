@@ -1,8 +1,8 @@
 //
-// Package:    GEMSimHitAnalyzer
-// Class:      GEMSimHitAnalyzer
+// Package:    MuonSimHitAnalyzer
+// Class:      MuonSimHitAnalyzer
 // 
-// \class GEMSimHitAnalyzer
+// \class MuonSimHitAnalyzer
 //
 // Description: Analyzer GEM SimHit information
 // To be used for GEM algorithm development.
@@ -100,13 +100,13 @@ struct MySimTrack
 };
 
 
-class GEMSimHitAnalyzer : public edm::EDAnalyzer
+class MuonSimHitAnalyzer : public edm::EDAnalyzer
 {
 public:
  /// Constructor
-  explicit GEMSimHitAnalyzer(const edm::ParameterSet& iConfig);
+  explicit MuonSimHitAnalyzer(const edm::ParameterSet& iConfig);
   /// Destructor
-  ~GEMSimHitAnalyzer();
+  ~MuonSimHitAnalyzer();
   
   virtual void beginRun(const edm::Run&, const edm::EventSetup&);
 
@@ -137,8 +137,8 @@ private:
   TTree* me0_sh_tree_;
   TTree* track_tree_;
   
-  const CSCGeometry* csc_geometry;
-  const RPCGeometry* rpc_geometry;
+  const CSCGeometry* csc_geometry_;
+  const RPCGeometry* rpc_geometry_;
   const GEMGeometry* gem_geometry_;
   const ME0Geometry* me0_geometry_;
   
@@ -161,23 +161,61 @@ private:
   edm::ESHandle<ME0Geometry> me0_geom;
  
   edm::ParameterSet cfg_;
-  std::string simInputLabel_;
-  float minPt_;
-  int verbose_;
+  bool verbose_;
+
+  edm::InputTag simTrackInput_;
+  edm::InputTag gemSimHitInput_;
+  edm::InputTag rpcSimHitInput_;
+  edm::InputTag cscSimHitInput_;
+  edm::InputTag me0SimHitInput_;
+
+  double simTrackMinPt_;
+  double simTrackMaxPt_;
+  double simTrackMinEta_;
+  double simTrackMaxEta_;
+  double simTrackOnlyMuon_;
   float radiusCenter_;
   float chamberHeight_;
 
   std::pair<std::vector<float>,std::vector<int> > positiveLUT_;
   std::pair<std::vector<float>,std::vector<int> > negativeLUT_;
+
+  bool hasGEMGeometry_;
+  bool hasRPCGeometry_;
+  bool hasME0Geometry_;
+  bool hasCSCGeometry_;
 };
 
 // Constructor
-GEMSimHitAnalyzer::GEMSimHitAnalyzer(const edm::ParameterSet& ps)
-: cfg_(ps.getParameterSet("simTrackMatching"))
-, simInputLabel_(ps.getUntrackedParameter<std::string>("simInputLabel", "g4SimHits"))
-, minPt_(ps.getUntrackedParameter<double>("minPt", 4.5))
-, verbose_(ps.getUntrackedParameter<int>("verbose", 0))
+MuonSimHitAnalyzer::MuonSimHitAnalyzer(const edm::ParameterSet& ps)
+: hasGEMGeometry_(true)
+, hasRPCGeometry_(true)
+, hasME0Geometry_(true)
+, hasCSCGeometry_(true)
 {
+  cfg_ = ps.getParameter<edm::ParameterSet>("simTrackMatching");
+  verbose_ = cfg_.getParameter<bool>("verbose");
+
+  auto simTrack = cfg_.getParameter<edm::ParameterSet>("simTrack");
+  simTrackInput_ = simTrack.getParameter<edm::InputTag>("input");
+  simTrackMinPt_ = simTrack.getParameter<double>("minPt");
+  simTrackMaxPt_ = simTrack.getParameter<double>("maxPt");
+  simTrackMinEta_ = simTrack.getParameter<double>("minEta");
+  simTrackMaxEta_ = simTrack.getParameter<double>("maxEta");
+  simTrackOnlyMuon_ = simTrack.getParameter<bool>("onlyMuon");
+
+  auto gemSimHit = cfg_.getParameter<edm::ParameterSet>("gemSimHit");
+  gemSimHitInput_ = gemSimHit.getParameter<edm::InputTag>("input");
+  
+  auto cscSimHit = cfg_.getParameter<edm::ParameterSet>("cscSimHit");
+  cscSimHitInput_ = cscSimHit.getParameter<edm::InputTag>("input");
+  
+  auto me0SimHit = cfg_.getParameter<edm::ParameterSet>("me0SimHit");
+  me0SimHitInput_ = me0SimHit.getParameter<edm::InputTag>("input");
+  
+  auto rpcSimHit = cfg_.getParameter<edm::ParameterSet>("rpcSimHit");
+  rpcSimHitInput_ = rpcSimHit.getParameter<edm::InputTag>("input");
+
   bookCSCSimHitsTree();
   bookRPCSimHitsTree();
   bookGEMSimHitsTree();
@@ -186,70 +224,93 @@ GEMSimHitAnalyzer::GEMSimHitAnalyzer(const edm::ParameterSet& ps)
 }
 
 
-GEMSimHitAnalyzer::~GEMSimHitAnalyzer()
+MuonSimHitAnalyzer::~MuonSimHitAnalyzer()
 {
 }
 
 
-void GEMSimHitAnalyzer::beginRun(const edm::Run &iRun, const edm::EventSetup &iSetup)
+void MuonSimHitAnalyzer::beginRun(const edm::Run &iRun, const edm::EventSetup &iSetup)
 {
-  iSetup.get<MuonGeometryRecord>().get(gem_geom);
-  gem_geometry_ = &*gem_geom;
+  try {
+    iSetup.get<MuonGeometryRecord>().get(gem_geom);
+    gem_geometry_ = &*gem_geom;
+  } catch (edm::eventsetup::NoProxyException<GEMGeometry>& e) {
+    hasGEMGeometry_ = false;
+    LogDebug("MuonSimHitAnalyzer") << "+++ Info: GEM geometry is unavailable. +++\n";
+  }
 
-  iSetup.get<MuonGeometryRecord>().get(me0_geom);
-  me0_geometry_ = &*me0_geom;
+  try {
+    iSetup.get<MuonGeometryRecord>().get(me0_geom);
+    me0_geometry_ = &*me0_geom;
+  } catch (edm::eventsetup::NoProxyException<ME0Geometry>& e) {
+    hasME0Geometry_ = false;
+    LogDebug("MuonSimHitAnalyzer") << "+++ Info: ME0 geometry is unavailable. +++\n";
+  }
 
-  iSetup.get<MuonGeometryRecord>().get(csc_geom);
-  csc_geometry = &*csc_geom;
+  try {
+    iSetup.get<MuonGeometryRecord>().get(csc_geom);
+    csc_geometry_ = &*csc_geom;
+  } catch (edm::eventsetup::NoProxyException<CSCGeometry>& e) {
+    hasCSCGeometry_ = false;
+    LogDebug("MuonSimHitAnalyzer") << "+++ Info: CSC geometry is unavailable. +++\n";
+  }
+
+  try {
+    iSetup.get<MuonGeometryRecord>().get(rpc_geom);
+    rpc_geometry_ = &*rpc_geom;
+  } catch (edm::eventsetup::NoProxyException<RPCGeometry>& e) {
+    hasRPCGeometry_ = false;
+    LogDebug("MuonSimHitAnalyzer") << "+++ Info: RPC geometry is unavailable. +++\n";
+  }
+
+  if(hasGEMGeometry_) {
+    
+    // FIXME - when a geometry with different partition numbers will be released, the code will brake!
+    const auto top_chamber = static_cast<const GEMEtaPartition*>(gem_geometry_->idToDetUnit(GEMDetId(1,1,1,1,1,1)));
+    const int nEtaPartitions(gem_geometry_->chamber(GEMDetId(1,1,1,1,1,1))->nEtaPartitions());
+    const auto bottom_chamber = static_cast<const GEMEtaPartition*>(gem_geometry_->idToDetUnit(GEMDetId(1,1,1,1,1,nEtaPartitions)));
+    const float top_half_striplength = top_chamber->specs()->specificTopology().stripLength()/2.;
+    const float bottom_half_striplength = bottom_chamber->specs()->specificTopology().stripLength()/2.;
+    const LocalPoint lp_top(0., top_half_striplength, 0.);
+    const LocalPoint lp_bottom(0., -bottom_half_striplength, 0.);
+    const GlobalPoint gp_top = top_chamber->toGlobal(lp_top);
+    const GlobalPoint gp_bottom = bottom_chamber->toGlobal(lp_bottom);
+    
+    radiusCenter_ = (gp_bottom.perp() + gp_top.perp())/2.;
+    chamberHeight_ = gp_top.perp() - gp_bottom.perp();
+    
+    using namespace std;
+    cout<<"half top "<<top_half_striplength<<" bot "<<lp_bottom<<endl;
+    cout<<"r  top "<<gp_top.perp()<<" bot "<<gp_bottom.perp()<<endl;
+    LocalPoint p0(0.,0.,0.);
+    cout<<"r0 top "<<top_chamber->toGlobal(p0).perp()<<" bot "<< bottom_chamber->toGlobal(p0).perp()<<endl;
+    cout<<"rch "<<radiusCenter_<<" hch "<<chamberHeight_<<endl;
+    
+    buildLUT();
+  }
+}
+
+
+void MuonSimHitAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
+{
+  iEvent.getByLabel(gemSimHitInput_, GEMHits);
+  if(hasGEMGeometry_ and GEMHits->size()) analyzeGEM(iEvent);
+
+  iEvent.getByLabel(me0SimHitInput_, ME0Hits);
+  if(hasME0Geometry_ and ME0Hits->size()) analyzeME0(iEvent);
+
+  iEvent.getByLabel(cscSimHitInput_, CSCHits);
+  if(hasCSCGeometry_ and CSCHits->size()) analyzeCSC(iEvent);
   
-  iSetup.get<MuonGeometryRecord>().get(rpc_geom);
-  rpc_geometry = &*rpc_geom;
+  iEvent.getByLabel(rpcSimHitInput_, RPCHits);
+  if(hasRPCGeometry_ and RPCHits->size()) analyzeRPC(iEvent);
 
-  // FIXME - when a geometry with different partition numbers will be released, the code will brake!
-  const auto top_chamber = static_cast<const GEMEtaPartition*>(gem_geometry_->idToDetUnit(GEMDetId(1,1,1,1,1,1)));
-  const int nEtaPartitions(gem_geometry_->chamber(GEMDetId(1,1,1,1,1,1))->nEtaPartitions());
-  const auto bottom_chamber = static_cast<const GEMEtaPartition*>(gem_geometry_->idToDetUnit(GEMDetId(1,1,1,1,1,nEtaPartitions)));
-  const float top_half_striplength = top_chamber->specs()->specificTopology().stripLength()/2.;
-  const float bottom_half_striplength = bottom_chamber->specs()->specificTopology().stripLength()/2.;
-  const LocalPoint lp_top(0., top_half_striplength, 0.);
-  const LocalPoint lp_bottom(0., -bottom_half_striplength, 0.);
-  const GlobalPoint gp_top = top_chamber->toGlobal(lp_top);
-  const GlobalPoint gp_bottom = bottom_chamber->toGlobal(lp_bottom);
-
-  radiusCenter_ = (gp_bottom.perp() + gp_top.perp())/2.;
-  chamberHeight_ = gp_top.perp() - gp_bottom.perp();
-
-  using namespace std;
-  cout<<"half top "<<top_half_striplength<<" bot "<<lp_bottom<<endl;
-  cout<<"r  top "<<gp_top.perp()<<" bot "<<gp_bottom.perp()<<endl;
-  LocalPoint p0(0.,0.,0.);
-  cout<<"r0 top "<<top_chamber->toGlobal(p0).perp()<<" bot "<< bottom_chamber->toGlobal(p0).perp()<<endl;
-  cout<<"rch "<<radiusCenter_<<" hch "<<chamberHeight_<<endl;
-
-  buildLUT();
+  iEvent.getByLabel(simTrackInput_, simVertices);
+  iEvent.getByLabel(simTrackInput_, simTracks);
+  if(hasGEMGeometry_ and GEMHits->size()) analyzeTracks(iEvent,iSetup);
 }
 
-
-void GEMSimHitAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
-{
-  iEvent.getByLabel(simInputLabel_, simVertices);
-  iEvent.getByLabel(simInputLabel_, simTracks);
-  analyzeTracks(iEvent,iSetup);
-
-  iEvent.getByLabel(edm::InputTag(simInputLabel_,"MuonGEMHits"), GEMHits);
-  if(GEMHits->size()) analyzeGEM( iEvent );
-
-  iEvent.getByLabel(edm::InputTag(simInputLabel_,"MuonME0Hits"), ME0Hits);
-  if(ME0Hits->size()) analyzeME0( iEvent );
-
-  iEvent.getByLabel(edm::InputTag(simInputLabel_,"MuonCSCHits"), CSCHits);
-  if(CSCHits->size()) analyzeCSC( iEvent );
-  
-  iEvent.getByLabel(edm::InputTag(simInputLabel_,"MuonRPCHits"), RPCHits);
-  if(RPCHits->size()) analyzeRPC( iEvent );
-}
-
-void GEMSimHitAnalyzer::bookCSCSimHitsTree()
+void MuonSimHitAnalyzer::bookCSCSimHitsTree()
 {  
   edm::Service<TFileService> fs;
   csc_sh_tree_ = fs->make<TTree>("CSCSimHits", "CSCSimHits");
@@ -279,7 +340,7 @@ void GEMSimHitAnalyzer::bookCSCSimHitsTree()
 }
 
 
-void GEMSimHitAnalyzer::bookRPCSimHitsTree()
+void MuonSimHitAnalyzer::bookRPCSimHitsTree()
 {
   edm::Service< TFileService > fs;
   rpc_sh_tree_ = fs->make< TTree >("RPCSimHits", "RPCSimHits");
@@ -305,7 +366,7 @@ void GEMSimHitAnalyzer::bookRPCSimHitsTree()
 }
 
 
-void GEMSimHitAnalyzer::bookGEMSimHitsTree()
+void MuonSimHitAnalyzer::bookGEMSimHitsTree()
 {
   edm::Service< TFileService > fs;
   gem_sh_tree_ = fs->make< TTree >("GEMSimHits", "GEMSimHits");
@@ -336,7 +397,7 @@ void GEMSimHitAnalyzer::bookGEMSimHitsTree()
 }
 
 
-void GEMSimHitAnalyzer::bookME0SimHitsTree()
+void MuonSimHitAnalyzer::bookME0SimHitsTree()
 {
   edm::Service< TFileService > fs;
   me0_sh_tree_ = fs->make< TTree >("ME0SimHits", "ME0SimHits");
@@ -365,7 +426,7 @@ void GEMSimHitAnalyzer::bookME0SimHitsTree()
 }
 
 
-void GEMSimHitAnalyzer::bookSimTracksTree()
+void MuonSimHitAnalyzer::bookSimTracksTree()
 {
   edm::Service< TFileService > fs;
   track_tree_ = fs->make< TTree >("Tracks", "Tracks");
@@ -390,7 +451,7 @@ void GEMSimHitAnalyzer::bookSimTracksTree()
 }
 
 
-void GEMSimHitAnalyzer::analyzeGEM( const edm::Event& iEvent )
+void MuonSimHitAnalyzer::analyzeGEM( const edm::Event& iEvent )
 {
   for (edm::PSimHitContainer::const_iterator itHit = GEMHits->begin(); itHit != GEMHits->end(); ++itHit)
   {
@@ -438,7 +499,7 @@ void GEMSimHitAnalyzer::analyzeGEM( const edm::Event& iEvent )
   }
 }
 
-void GEMSimHitAnalyzer::analyzeME0( const edm::Event& iEvent )
+void MuonSimHitAnalyzer::analyzeME0( const edm::Event& iEvent )
 {
   for (edm::PSimHitContainer::const_iterator itHit = ME0Hits->begin(); itHit != ME0Hits->end(); ++itHit)
   {
@@ -485,7 +546,7 @@ void GEMSimHitAnalyzer::analyzeME0( const edm::Event& iEvent )
 }
 
 
-void GEMSimHitAnalyzer::analyzeCSC( const edm::Event& iEvent )
+void MuonSimHitAnalyzer::analyzeCSC( const edm::Event& iEvent )
 {
   for (edm::PSimHitContainer::const_iterator itHit = CSCHits->begin(); itHit != CSCHits->end(); ++itHit)
   {
@@ -508,7 +569,7 @@ void GEMSimHitAnalyzer::analyzeCSC( const edm::Event& iEvent )
     csc_sh.layer = id.layer();
 
     const LocalPoint p0(0., 0., 0.);
-    const GlobalPoint Gp0(csc_geometry->idToDet(itHit->detUnitId())->surface().toGlobal(p0));
+    const GlobalPoint Gp0(csc_geometry_->idToDet(itHit->detUnitId())->surface().toGlobal(p0));
     csc_sh.Phi_0 = Gp0.phi();
     csc_sh.R_0 = Gp0.perp();
 
@@ -519,7 +580,7 @@ void GEMSimHitAnalyzer::analyzeCSC( const edm::Event& iEvent )
     if(id.endcap()==2) csc_sh.DeltaPhi = atan(-(itHit->localPosition().x())/(Gp0.perp() + itHit->localPosition().y()));
     
     const LocalPoint hitLP(itHit->localPosition());
-    const GlobalPoint hitGP(csc_geometry->idToDet(itHit->detUnitId())->surface().toGlobal(hitLP));
+    const GlobalPoint hitGP(csc_geometry_->idToDet(itHit->detUnitId())->surface().toGlobal(hitLP));
     
     csc_sh.globalR = hitGP.perp();
     csc_sh.globalEta = hitGP.eta();
@@ -533,7 +594,7 @@ void GEMSimHitAnalyzer::analyzeCSC( const edm::Event& iEvent )
 }
 
 
-void GEMSimHitAnalyzer::analyzeRPC( const edm::Event& iEvent )
+void MuonSimHitAnalyzer::analyzeRPC( const edm::Event& iEvent )
 {
   for (edm::PSimHitContainer::const_iterator itHit = RPCHits->begin(); itHit != RPCHits->end(); ++itHit)
   {
@@ -558,7 +619,7 @@ void GEMSimHitAnalyzer::analyzeRPC( const edm::Event& iEvent )
     rpc_sh.roll = id.roll();
     
     const LocalPoint hitLP(itHit->localPosition());
-    const GlobalPoint hitGP(rpc_geometry->idToDet(itHit->detUnitId())->surface().toGlobal(hitLP));
+    const GlobalPoint hitGP(rpc_geometry_->idToDet(itHit->detUnitId())->surface().toGlobal(hitLP));
 
     rpc_sh.globalR = hitGP.perp();
     rpc_sh.globalEta = hitGP.eta();
@@ -567,26 +628,29 @@ void GEMSimHitAnalyzer::analyzeRPC( const edm::Event& iEvent )
     rpc_sh.globalY = hitGP.y();
     rpc_sh.globalZ = hitGP.z();
     
-    rpc_sh.strip=rpc_geometry->roll(itHit->detUnitId())->strip(hitLP);
+    rpc_sh.strip=rpc_geometry_->roll(itHit->detUnitId())->strip(hitLP);
 
     rpc_sh_tree_->Fill();
   }
 }
 
 
-bool GEMSimHitAnalyzer::isSimTrackGood(const SimTrack &t)
+bool MuonSimHitAnalyzer::isSimTrackGood(const SimTrack &t)
 {
   // SimTrack selection
   if (t.noVertex()) return false;
   if (t.noGenpart()) return false;
-  if (std::abs(t.type()) != 13) return false; // only interested in direct muon simtracks
-  if (t.momentum().pt() < minPt_) return false;
+  // only muons 
+  if (std::abs(t.type()) != 13 and simTrackOnlyMuon_) return false;
+  // pt selection
+  if (t.momentum().pt() < simTrackMinPt_) return false;
+  // eta selection
   const float eta(std::abs(t.momentum().eta()));
-  if (eta > 2.18 || eta < 1.55) return false; // no GEMs could be in such eta
+  if (eta > simTrackMaxEta_ || eta < simTrackMinEta_) return false; 
   return true;
 }
 
-void GEMSimHitAnalyzer::analyzeTracks(const edm::Event& iEvent, const edm::EventSetup& iSetup)
+void MuonSimHitAnalyzer::analyzeTracks(const edm::Event& iEvent, const edm::EventSetup& iSetup)
 {
   const edm::SimVertexContainer & sim_vert(*simVertices.product());
   
@@ -597,7 +661,7 @@ void GEMSimHitAnalyzer::analyzeTracks(const edm::Event& iEvent, const edm::Event
     // match hits and digis to this SimTrack
     const SimTrackMatchManager match(t, sim_vert[t.vertIndex()], cfg_, iEvent, iSetup);
     const SimHitMatcher& match_sh = match.simhits();
-   
+
     track.pt = t.momentum().pt();
     track.phi = t.momentum().phi();
     track.eta = t.momentum().eta();
@@ -714,7 +778,7 @@ void GEMSimHitAnalyzer::analyzeTracks(const edm::Event& iEvent, const edm::Event
 }
 
 // ------------ method fills 'descriptions' with the allowed parameters for the module  ------------
-void GEMSimHitAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descriptions) {
+void MuonSimHitAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descriptions) {
   // The following says we do not know what parameters are allowed so do no validation
   // Please change this to state exactly what you do use, even if it is no parameters
   edm::ParameterSetDescription desc;
@@ -722,20 +786,20 @@ void GEMSimHitAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descrip
   descriptions.addDefault(desc);
 }
 
-void GEMSimHitAnalyzer::buildLUT()
+void MuonSimHitAnalyzer::buildLUT()
 {
   std::vector<int> pos_ids;
-  pos_ids.push_back(GEMDetId(1,1,1,1,36,1).rawId());
+  pos_ids.push_back(GEMDetId(1,1,1,1,36,2).rawId());
 
   std::vector<int> neg_ids;
-  neg_ids.push_back(GEMDetId(-1,1,1,1,36,1).rawId());
+  neg_ids.push_back(GEMDetId(-1,1,1,1,36,2).rawId());
 
   std::vector<float> phis;
   phis.push_back(0.);
   for(int i=1; i<37; ++i)
   {
-    pos_ids.push_back(GEMDetId(1,1,1,1,i,1).rawId());
-    neg_ids.push_back(GEMDetId(-1,1,1,1,i,1).rawId());
+    pos_ids.push_back(GEMDetId(1,1,1,1,i,2).rawId());
+    neg_ids.push_back(GEMDetId(-1,1,1,1,i,2).rawId());
     phis.push_back(i*10.);
   }
   positiveLUT_ = std::make_pair(phis,pos_ids);
@@ -743,7 +807,7 @@ void GEMSimHitAnalyzer::buildLUT()
 }
 
 std::pair<int,int>
-GEMSimHitAnalyzer::getClosestChambers(int region, float phi)
+MuonSimHitAnalyzer::getClosestChambers(int region, float phi)
 {
   auto& phis(positiveLUT_.first);
   auto upper = std::upper_bound(phis.begin(), phis.end(), phi);
@@ -754,5 +818,5 @@ GEMSimHitAnalyzer::getClosestChambers(int region, float phi)
 }
 
 //define this as a plug-in
-DEFINE_FWK_MODULE(GEMSimHitAnalyzer);
+DEFINE_FWK_MODULE(MuonSimHitAnalyzer);
 

@@ -6,7 +6,6 @@
  Needed for the GEM-CSC triggering algorithm development.
 
  Original Author:  "Vadim Khotilovich"
- $Id: GEMCSCAnalyzer.cc,v 1.4 2013/03/05 14:02:45 khotilov Exp $
 */
 
 #include "FWCore/Framework/interface/Frameworkfwd.h"
@@ -88,9 +87,9 @@ struct MyTrackEff
   Char_t chamber_odd; // bit1: has GEM pad   bit2: has CSC LCT
   Char_t chamber_even; // bit1: has GEM pad   bit2: has CSC LCT
 
-  Char_t has_csc_sh; // #layers with SimHits > 4    bit1: in odd, bit2: even
-  Char_t has_csc_strips; // #layers with comparator digis > 4    bit1: in odd, bit2: even
-  Char_t has_csc_wires; // #layers with wire digis > 4    bit1: in odd, bit2: even
+  Char_t has_csc_sh; // #layers with SimHits > minHitsChamber    bit1: in odd, bit2: even
+  Char_t has_csc_strips; // #layers with comparator digis > minHitsChamber    bit1: in odd, bit2: even
+  Char_t has_csc_wires; // #layers with wire digis > minHitsChamber    bit1: in odd, bit2: even
 
   Char_t has_clct; // bit1: in odd, bit2: even
   Char_t has_alct; // bit1: in odd, bit2: even
@@ -288,10 +287,11 @@ private:
   bool isSimTrackGood(const SimTrack &t);
 
   edm::ParameterSet cfg_;
-  std::string simInputLabel_;
-  float minPt_;
-  float minEta_;
-  float maxEta_;
+  edm::InputTag simInputLabel_;
+  double simTrackMinPt_;
+  double simTrackMinEta_;
+  double simTrackMaxEta_;
+  double simTrackOnlyMuon_;
   int verbose_;
   bool ntupleTrackChamberDelta_;
   bool ntupleTrackEff_;
@@ -302,19 +302,57 @@ private:
   
   MyTrackEff  etrk_[5];
   MyTrackChamberDelta dtrk_;
+
+  int minNHitsChamberCSCSimHit_;
+  int minNHitsChamberCSCWireDigi_;
+  int minNHitsChamberCSCStripDigi_;
+  int minNHitsChamberCLCT_;
+  int minNHitsChamberALCT_;
+  int minNHitsChamberLCT_;
+  int minNHitsChamberMPLCT_;
 };
 
 
 GEMCSCAnalyzer::GEMCSCAnalyzer(const edm::ParameterSet& ps)
 : cfg_(ps.getParameterSet("simTrackMatching"))
-, simInputLabel_(ps.getUntrackedParameter<std::string>("simInputLabel", "g4SimHits"))
-, minPt_(ps.getUntrackedParameter<double>("minPt", 4.5))
-, minEta_(ps.getUntrackedParameter<double>("minEta", 1.55))
-, maxEta_(ps.getUntrackedParameter<double>("maxEta", 2.18))
 , verbose_(ps.getUntrackedParameter<int>("verbose", 0))
-, ntupleTrackChamberDelta_(ps.getUntrackedParameter<bool>("ntupleTrackChamberDelta", true))
-, ntupleTrackEff_(ps.getUntrackedParameter<bool>("ntupleTrackEff", true))
 {
+  ntupleTrackChamberDelta_ = cfg_.getParameter<bool>("ntupleTrackChamberDelta");
+  ntupleTrackEff_ = cfg_.getParameter<bool>("ntupleTrackEff");
+
+  auto simTrack = cfg_.getParameter<edm::ParameterSet>("simTrack");
+  simInputLabel_ = simTrack.getParameter<edm::InputTag>("input");
+  simTrackMinPt_ = simTrack.getParameter<double>("minPt");
+  simTrackMinEta_ = simTrack.getParameter<double>("minEta");
+  simTrackMaxEta_ = simTrack.getParameter<double>("maxEta");
+  simTrackOnlyMuon_ = simTrack.getParameter<bool>("onlyMuon");
+    
+  auto cscSimHit = cfg_.getParameter<edm::ParameterSet>("cscSimHit");
+  minNHitsChamberCSCSimHit_ = cscSimHit.getParameter<int>("minNHitsChamber");
+
+  auto cscWireDigi = cfg_.getParameter<edm::ParameterSet>("cscWireDigi");
+  minNHitsChamberCSCWireDigi_ = cscWireDigi.getParameter<int>("minNHitsChamber");
+
+  auto cscComparatorDigi = cfg_.getParameter<edm::ParameterSet>("cscStripDigi");
+  minNHitsChamberCSCStripDigi_ = cscComparatorDigi.getParameter<int>("minNHitsChamber");
+
+  auto cscCLCT = cfg_.getParameter<edm::ParameterSet>("cscCLCT");
+  minNHitsChamberCLCT_ = cscCLCT.getParameter<int>("minNHitsChamber");
+
+  auto cscALCT = cfg_.getParameter<edm::ParameterSet>("cscALCT");
+  minNHitsChamberALCT_ = cscALCT.getParameter<int>("minNHitsChamber");
+
+  auto cscLCT = cfg_.getParameter<edm::ParameterSet>("cscLCT");
+  minNHitsChamberLCT_ = cscLCT.getParameter<int>("minNHitsChamber");
+
+  auto cscMPLCT = cfg_.getParameter<edm::ParameterSet>("cscMPLCT");
+  minNHitsChamberMPLCT_ = cscMPLCT.getParameter<int>("minNHitsChamber");
+
+  auto tfTrack = cfg_.getParameter<edm::ParameterSet>("tfTrack");
+  auto tfCand = cfg_.getParameter<edm::ParameterSet>("tfCand");
+  auto gmtCand = cfg_.getParameter<edm::ParameterSet>("gmtCand");
+  auto l1Extra = cfg_.getParameter<edm::ParameterSet>("l1Extra");
+
   if (ntupleTrackChamberDelta_) bookSimTracksDeltaTree();
   if (ntupleTrackEff_)
   {
@@ -341,10 +379,13 @@ bool GEMCSCAnalyzer::isSimTrackGood(const SimTrack &t)
   // SimTrack selection
   if (t.noVertex()) return false;
   if (t.noGenpart()) return false;
-  if (std::abs(t.type()) != 13) return false; // only interested in direct muon simtracks
-  if (t.momentum().pt() < minPt_) return false;
-  float eta = std::abs(t.momentum().eta());
-  if (eta > maxEta_ || eta < minEta_) return false; // no GEMs could be in such eta
+  // only muons 
+  if (std::abs(t.type()) != 13 and simTrackOnlyMuon_) return false;
+  // pt selection
+  if (t.momentum().pt() < simTrackMinPt_) return false;
+  // eta selection
+  const float eta(std::abs(t.momentum().eta()));
+  if (eta > simTrackMaxEta_ || eta < simTrackMinEta_) return false; 
   return true;
 }
 
@@ -423,6 +464,7 @@ void GEMCSCAnalyzer::analyzeTrackEff(SimTrackMatchManager& match, int trk_no)
   const GEMDigiMatcher& match_gd = match.gemDigis();
   const CSCDigiMatcher& match_cd = match.cscDigis();
   const CSCStubMatcher& match_lct = match.cscStubs();
+  //  const TrackMatcher& match_track = match.tracks();
   const SimTrack &t = match_sh.trk();
 
 
@@ -446,7 +488,7 @@ void GEMCSCAnalyzer::analyzeTrackEff(SimTrackMatchManager& match, int trk_no)
     if (stations_to_use_.count(st) == 0) continue;
 
     int nlayers = match_sh.nLayersWithHitsInSuperChamber(d);
-    if (nlayers < 4) continue;
+    if (nlayers < minNHitsChamberCSCSimHit_) continue;
 
     if (id.chamber() & 1) etrk_[st].has_csc_sh |= 1;
     else etrk_[st].has_csc_sh |= 2;
@@ -466,7 +508,7 @@ void GEMCSCAnalyzer::analyzeTrackEff(SimTrackMatchManager& match, int trk_no)
     if (stations_to_use_.count(st) == 0) continue;
 
     int nlayers = match_cd.nLayersWithStripInChamber(d);
-    if (nlayers < 4) continue;
+    if (nlayers < minNHitsChamberCSCStripDigi_) continue;
 
     if (id.chamber() & 1) etrk_[st].has_csc_strips |= 1;
     else etrk_[st].has_csc_strips |= 2;
@@ -481,7 +523,7 @@ void GEMCSCAnalyzer::analyzeTrackEff(SimTrackMatchManager& match, int trk_no)
     if (stations_to_use_.count(st) == 0) continue;
 
     int nlayers = match_cd.nLayersWithWireInChamber(d);
-    if (nlayers < 4) continue;
+    if (nlayers < minNHitsChamberCSCWireDigi_) continue;
 
     if (id.chamber() & 1) etrk_[st].has_csc_wires |= 1;
     else etrk_[st].has_csc_wires |= 2;
@@ -748,7 +790,7 @@ void GEMCSCAnalyzer::analyzeTrackChamberDeltas(SimTrackMatchManager& match, int 
     cout<<"n_csh_ids "<<match_sh.detIdsCSC().size()<<endl;
     auto csc_csh_ch_ids = match_sh.chamberIdsCSC();
     cout<<"n_csh_ids_ch "<<csc_csh_ch_ids.size()<<endl;
-    cout<<"n_csh_coch "<<match_sh.nCoincidenceCSCChambers()<<endl;
+    cout<<"n_csh_coch "<<match_sh.nCoincidenceCSCChambers(minNHitsChamberCSCSimHit_)<<endl;
     for (auto id: csc_csh_ch_ids)
     {
       auto csc_simhits = match_sh.hitsInChamber(id);
@@ -835,8 +877,8 @@ void GEMCSCAnalyzer::analyzeTrackChamberDeltas(SimTrackMatchManager& match, int 
   // fill the information for delta-tree
   // only for tracks with enough hit layers in CSC and at least a pad in GEM
   if ( match_gd.nPads() > 0 &&
-       match_cd.nCoincidenceStripChambers(4) > 0 &&
-       match_cd.nCoincidenceWireChambers(4) > 0 )
+       match_cd.nCoincidenceStripChambers(minNHitsChamberCSCStripDigi_) > 0 &&
+       match_cd.nCoincidenceWireChambers(minNHitsChamberCSCWireDigi_) > 0 )
   {
     dtrk_.pt = t.momentum().pt();
     dtrk_.phi = t.momentum().phi();
@@ -851,7 +893,7 @@ void GEMCSCAnalyzer::analyzeTrackChamberDeltas(SimTrackMatchManager& match, int 
       CSCDetId csc_id(csc_d);
 
       // require CSC chamber to have at least 4 layers with comparator digis
-      if (match_cd.nLayersWithStripInChamber(csc_d) < 4) continue;
+      if (match_cd.nLayersWithStripInChamber(csc_d) < minNHitsChamberCSCStripDigi_) continue;
 
       bool is_odd = csc_id.chamber() & 1;
       int region = (csc_id.endcap() == 1) ? 1 : -1;

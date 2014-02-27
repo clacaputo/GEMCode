@@ -1,10 +1,5 @@
-#include "GEMRecHitMatcher.h"
-#include "SimHitMatcher.h"
-
-#include "DataFormats/MuonDetId/interface/GEMDetId.h"
-#include "FWCore/Framework/interface/ESHandle.h"
-#include "Geometry/Records/interface/MuonGeometryRecord.h"
-#include "Geometry/GEMGeometry/interface/GEMGeometry.h"
+#include "GEMCode/GEMValidation/src/GEMRecHitMatcher.h"
+#include "GEMCode/GEMValidation/src/SimHitMatcher.h"
 
 using namespace std;
 using namespace matching;
@@ -12,17 +7,13 @@ using namespace matching;
 GEMRecHitMatcher::GEMRecHitMatcher(SimHitMatcher& sh)
   : BaseMatcher(sh.trk(), sh.vtx(), sh.conf(), sh.event(), sh.eventSetup())
   , simhit_matcher_(&sh)
-
 {
-  gemRecHitInput_ = conf().getUntrackedParameter<edm::InputTag>("gemRecHitInput",
-      edm::InputTag("gemRecHits"));
-
-  minBXGEM_ = conf().getUntrackedParameter<int>("minBXGEM", -1);
-  maxBXGEM_ = conf().getUntrackedParameter<int>("maxBXGEM", 1);
-
-  matchDeltaStrip_ = conf().getUntrackedParameter<int>("matchDeltaStripGEM", 1);
-
-  setVerbose(conf().getUntrackedParameter<int>("verboseGEMRecHit", 0));
+  auto gemRecHit_= conf().getParameter<edm::ParameterSet>("gemRecHit");
+  gemRecHitInput_ = gemRecHit_.getParameter<edm::InputTag>("input");
+  minBXGEM_ = gemRecHit_.getParameter<int>("minBX");
+  maxBXGEM_ = gemRecHit_.getParameter<int>("maxBX");
+  matchDeltaStrip_ = gemRecHit_.getParameter<int>("matchDeltaStrip");
+  setVerbose(gemRecHit_.getParameter<int>("verbose"));
 
   if (!(gemRecHitInput_.label().empty()))
   {
@@ -39,10 +30,6 @@ GEMRecHitMatcher::init()
   edm::Handle<GEMRecHitCollection> gem_rechits;
   event().getByLabel(gemRecHitInput_, gem_rechits);
   matchRecHitsToSimTrack(*gem_rechits.product());
-
-  edm::ESHandle<GEMGeometry> gem_g;
-  eventSetup().get<MuonGeometryRecord>().get(gem_g);
-  gem_geo_ = &*gem_g;
 }
 
 
@@ -200,8 +187,8 @@ GEMRecHitMatcher::recHitPosition(const RecHit& rechit) const
   if ( t == GEM_STRIP )
   {
     GEMDetId idd(id);
-    LocalPoint lp = gem_geo_->etaPartition(idd)->centreOfStrip(strip);
-    gp = gem_geo_->idToDet(id)->surface().toGlobal(lp);
+    LocalPoint lp = gemGeometry_->etaPartition(idd)->centreOfStrip(strip);
+    gp = gemGeometry_->idToDet(id)->surface().toGlobal(lp);
   }
 
   return gp;
